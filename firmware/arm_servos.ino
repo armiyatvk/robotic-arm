@@ -47,7 +47,7 @@ void loop() {
       } else if (joint == 'B') targetB = constrain(val, 0, 180);
       else if (joint == 'S') targetS = constrain(val, 10, 170);
       else if (joint == 'E') targetE = constrain(val, 30, 150);
-      else if (joint == 'G') targetG = constrain(val, 20, 90);
+      else if (joint == 'G') targetG = constrain(val, 10, 90);
     }
   }
 

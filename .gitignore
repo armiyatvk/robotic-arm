@@ -1,2 +1,7 @@
 secrets.h
 .env
+node_modules
+.DS_Store
+.gitignore
+dist
+test-queue.ts

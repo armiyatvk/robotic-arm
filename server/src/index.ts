@@ -7,6 +7,7 @@ import type { ClientToServerEvents, ServerToClientEvents, SocketData } from './t
 import { initDb } from './db'
 import { registerSocketHandlers } from './socket'
 import { getState } from './queue'
+import { watchArmHeartbeat } from './firebase'
 
 const app = express()
 const httpServer = createServer(app)
@@ -44,6 +45,15 @@ async function start(): Promise<void> {
         console.error('Failed to initialize database:', err)
         console.log('Starting without database — commands will not be persisted')
     }
+
+    // Set up Firebase arm heartbeat once at startup — broadcasts arm_state to all clients
+    watchArmHeartbeat((partialState) => {
+        io.emit('arm_state', {
+            base: 90, shoulder: 90, elbow: 90, gripper: 20,
+            online: false, lastSeen: null,
+            ...partialState,
+        })
+    })
 
     const PORT = process.env['PORT'] ?? 3001
     httpServer.listen(PORT, () => {

@@ -1,9 +1,11 @@
 import type { Server, Socket } from 'socket.io'
+import { writeCommandToFirebase, watchArmHeartbeat } from './firebase'
 import type {
     ClientToServerEvents,
     ServerToClientEvents,
     SocketData,
     CommandPayload,
+    ArmState,
 } from './types'
 import {
     tryEnqueue,
@@ -23,6 +25,17 @@ type IoServer = Server<ClientToServerEvents, ServerToClientEvents, Record<string
 type IoSocket = Socket<ClientToServerEvents, ServerToClientEvents, Record<string, never>, SocketData>
 
 const connectedUsers = new Map<string, { userId: string | null; connectedAt: string }>()
+
+// Module-level — persists across socket connections
+let heartbeatUnsubscribe: (() => void) | null = null
+let currentArmState: ArmState = {
+    base: 90,
+    shoulder: 90,
+    elbow: 90,
+    gripper: 20,
+    online: false,
+    lastSeen: null,
+}
 
 function broadcastUsers(io: IoServer): void {
     const users = Array.from(connectedUsers.entries()).map(([socketId, data]) => ({
@@ -53,7 +66,6 @@ async function processNextCommand(io: IoServer): Promise<void> {
         }
 
         await logCommand(result)
-
         io.to(command.socketId).emit('command_result', result)
 
     } catch (err) {
@@ -65,7 +77,6 @@ async function processNextCommand(io: IoServer): Promise<void> {
         }
 
         await logCommand(result)
-
         io.to(command.socketId).emit('command_result', result)
 
     } finally {
@@ -76,13 +87,24 @@ async function processNextCommand(io: IoServer): Promise<void> {
 }
 
 async function sendToArm(command: CommandPayload): Promise<void> {
-    // Phase 2: replace this with your actual arm communication
-    // For now simulates execution time so the queue behavior is testable
-    console.log(`Executing: ${command.servo} → ${command.angle}°`)
-    await new Promise(resolve => setTimeout(resolve, 500))
+    console.log(`[ARM] Writing to Firebase: ${command.servo} → ${command.angle}°`)
+    await writeCommandToFirebase(command.servo, command.angle)
+    console.log(`[ARM] Firebase write complete`)
 }
 
 export function registerSocketHandlers(io: IoServer, socket: IoSocket): void {
+
+    // Start heartbeat watcher once — when first client connects
+    if (!heartbeatUnsubscribe) {
+        heartbeatUnsubscribe = watchArmHeartbeat((partialState) => {
+            currentArmState = { ...currentArmState, ...partialState }
+            io.emit('arm_state', currentArmState)
+        })
+    }
+
+    // Send current arm state immediately to newly connected client
+    socket.emit('arm_state', currentArmState)
+
     const connectedAt = new Date().toISOString()
     connectedUsers.set(socket.id, { userId: null, connectedAt })
     broadcastUsers(io)
@@ -100,7 +122,7 @@ export function registerSocketHandlers(io: IoServer, socket: IoSocket): void {
         try {
             await upsertUser(userId)
             const sessionId = await startSession(userId, socket.id)
-            socket.data.sessionId = sessionId  // ← store it
+            socket.data.sessionId = sessionId
         } catch (err) {
             console.error('DB error on join:', err)
         }
@@ -141,7 +163,7 @@ export function registerSocketHandlers(io: IoServer, socket: IoSocket): void {
 
         if (user?.userId && socket.data.sessionId) {
             try {
-                await endSession(socket.data.sessionId)  // ← use real session ID
+                await endSession(socket.data.sessionId)
             } catch (err) {
                 console.error('DB error on disconnect:', err)
             }

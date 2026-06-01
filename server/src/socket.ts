@@ -11,6 +11,12 @@ import {
     tryEnqueue,
     dequeueNext,
     releaseQueue,
+    joinQueue,
+    leaveQueue,
+    startTurn,
+    handleUserDisconnect,
+    setOnStateChange,
+    setOnTurnExpired,
     getState,
     isLocked,
 } from './queue'
@@ -100,6 +106,13 @@ export function registerSocketHandlers(io: IoServer, socket: IoSocket): void {
             currentArmState = { ...currentArmState, ...partialState }
             io.emit('arm_state', currentArmState)
         })
+        setOnStateChange(() => io.emit('queue_update', getState()))
+        setOnTurnExpired(async () => {
+            // Reset arm to home position between turns (gripper → elbow → shoulder → base)
+            for (const [servo, angle] of [['gripper', 20], ['elbow', 90], ['shoulder', 90], ['base', 90]] as const) {
+                await writeCommandToFirebase(servo, angle)
+            }
+        })
     }
 
     // Send current arm state immediately to newly connected client
@@ -137,10 +150,10 @@ export function registerSocketHandlers(io: IoServer, socket: IoSocket): void {
             userId: socket.data.userId ?? socket.id,
         }
 
-        const accepted = tryEnqueue(commandWithSocket)
+        const error = tryEnqueue(commandWithSocket)
 
-        if (!accepted) {
-            socket.emit('error', `Invalid command: ${payload.servo} ${payload.angle}° is out of range`)
+        if (error !== null) {
+            socket.emit('error', error)
             return
         }
 
@@ -156,10 +169,25 @@ export function registerSocketHandlers(io: IoServer, socket: IoSocket): void {
         broadcastUsers(io)
     })
 
+    socket.on('join_queue', () => {
+        joinQueue(socket.data.userId ?? socket.id)
+    })
+
+    socket.on('leave_queue', async () => {
+        await leaveQueue(socket.data.userId ?? socket.id)
+    })
+
+    socket.on('start_turn', () => {
+        const ok = startTurn(socket.data.userId ?? socket.id)
+        if (!ok) socket.emit('error', 'Not your turn to start')
+    })
+
     socket.on('disconnect', async () => {
         const user = connectedUsers.get(socket.id)
         connectedUsers.delete(socket.id)
         broadcastUsers(io)
+
+        await handleUserDisconnect(socket.data.userId ?? socket.id)
 
         if (user?.userId && socket.data.sessionId) {
             try {
@@ -168,7 +196,5 @@ export function registerSocketHandlers(io: IoServer, socket: IoSocket): void {
                 console.error('DB error on disconnect:', err)
             }
         }
-
-        broadcastQueueState(io)
     })
 }

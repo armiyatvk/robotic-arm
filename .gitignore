@@ -5,3 +5,7 @@ node_modules
 .gitignore
 dist
 test-queue.ts
+
+service-account.json
+
+.claude
